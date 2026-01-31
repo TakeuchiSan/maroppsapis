@@ -3,200 +3,78 @@ from flask_cors import CORS
 import requests
 from bs4 import BeautifulSoup
 import re
+import time
 
 app = Flask(__name__)
 CORS(app)
 
+# Headers untuk meniru browser
 SPOTIFY_HEADERS = {
     'authority': 'spotdown.org',
     'accept': 'application/json, text/plain, */*',
-    'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-    'referer': 'https://spotdown.org/search',
-    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'referer': 'https://spotdown.org/'
 }
 
 TIKTOK_HEADERS = {
     'authority': 'ttsave.app',
-    'accept': 'application/json, text/plain, */*',
-    'accept-language': 'id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7',
-    'content-type': 'application/json',
-    'origin': 'https://ttsave.app',
-    'referer': 'https://ttsave.app/en',
-    'user-agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Mobile Safari/537.36',
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'referer': 'https://ttsave.app/'
 }
 
 def sanitize_filename(name):
-    return re.sub(r'[\\/*?:"<>|]', "", name)
+    # Membersihkan nama file dari karakter aneh
+    clean = re.sub(r'[\\/*?:"<>|]', "", name)
+    return clean[:50]  # Batasi panjang nama file
 
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
-        "status": "Active",
-        "endpoints": {
-            "tiktok": "/ttdown/download",
-            "mp3_search": "/mp3down/search",
-            "mp3_download": "/mp3down/download"
-        }
+        "status": "Online",
+        "message": "Maroppp Project Server Proxy is Running",
+        "version": "3.1"
     })
 
-@app.route('/ttdown/download', methods=['GET', 'POST'])
-def tiktok_download():
-    try:
-        url = request.args.get('url')
-        if not url:
-            body = request.get_json(silent=True)
-            if body and 'url' in body:
-                url = body['url']
+# --- GENERIC STREAMER (INTI DARI FITUR PROFESIONAL) ---
+@app.route('/stream_content', methods=['GET'])
+def stream_content():
+    """
+    Endpoint ini bertindak sebagai 'Jembatan'.
+    Server mendownload file -> Server kirim ke User.
+    User tidak melihat URL asli.
+    """
+    file_url = request.args.get('url')
+    filename = request.args.get('filename', f'download_{int(time.time())}')
+    file_type = request.args.get('type', 'mp4') # mp4 atau mp3
 
-        if not url:
-            return jsonify({"status": "error", "message": "URL parameter required"}), 400
-            
-        data = {
-           'query': url,
-           'language_id': '1',
-        }
-
-        session = requests.Session()
-        req = session.post('https://ttsave.app/download', headers=TIKTOK_HEADERS, json=data)
-        
-        if req.status_code != 200:
-            return jsonify({"status": "error", "message": "Provider unavailable"}), 400
-
-        soup = BeautifulSoup(req.text, 'html.parser')
-        
-        result = {
-            "platform": "tiktok",
-            "type": "unknown",
-            "video": None,
-            "audio": None,
-            "slides": []
-        }
-
-        video_links = []
-
-        # LOGIC BARU: Parsing lebih rapi untuk mendapatkan No Watermark
-        for a in soup.find_all('a'):
-            href = a.get('href')
-            if not href:
-                continue
-            
-            raw_html = str(a)
-
-            if 'video_mp4' in raw_html or ('nwm' in href and '.mp4' in href):
-                # Kumpulkan semua link video
-                video_links.append(href)
-                result['type'] = "video"
-            elif '.mp3' in href:
-                result['audio'] = href
-            elif 'slide' in href or 'image' in href or '.jpg' in href:
-                if href not in result['slides']:
-                    result['slides'].append(href)
-                    result['type'] = "slide"
-
-        # Ttsave biasanya menaruh link No Watermark di urutan pertama (index 0)
-        if video_links:
-            result['video'] = video_links[0]
-
-        return jsonify({
-            "status": "success",
-            "data": result
-        })
-
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
-
-@app.route('/mp3down/search', methods=['GET'])
-def music_search():
-    query = request.args.get('q')
-    
-    if not query:
-        return jsonify({"error": "Parameter 'q' required"}), 400
+    if not file_url:
+        return jsonify({"error": "URL parameter required"}), 400
 
     try:
-        session = requests.Session()
-        params = {'url': query}
+        # Tentukan headers berdasarkan domain source
+        req_headers = TIKTOK_HEADERS if 'tiktok' in file_url or 'ttsave' in file_url else SPOTIFY_HEADERS
         
-        response = session.get(
-            'https://spotdown.org/api/song-details', 
-            params=params, 
-            headers=SPOTIFY_HEADERS
-        )
+        # Request stream (download bertahap)
+        req = requests.get(file_url, headers=req_headers, stream=True)
         
-        if response.status_code != 200:
-             return jsonify({"error": "Provider unavailable"}), 502
-        
-        data = response.json()
-        
-        if 'songs' not in data or not data['songs']:
-            return jsonify({"message": "No songs found", "data": []}), 404
+        # Tentukan Content-Type
+        content_type = 'video/mp4' if file_type == 'video' else 'audio/mpeg'
+        if file_type == 'image': content_type = 'image/jpeg'
 
-        results = []
-        base_url = request.host_url.rstrip('/')
+        # Nama file final
+        final_filename = f"{sanitize_filename(filename)}.{'mp4' if file_type == 'video' else 'mp3'}"
+        if file_type == 'image': final_filename = f"{sanitize_filename(filename)}.jpg"
 
-        for item in data['songs']:
-            raw_url = item.get('url')
-            raw_title = item.get('title')
-            raw_artist = item.get('artist')
-            
-            # Membuat link download internal
-            dl_link = (
-                f"{base_url}/mp3down/download"
-                f"?url={raw_url}"
-                f"&title={raw_title}"
-                f"&artist={raw_artist}"
-            )
-
-            results.append({
-                "title": raw_title,
-                "artist": raw_artist,
-                "duration": item.get('duration'),
-                "thumbnail": item.get('thumbnail'),
-                "download_url": dl_link
-            })
-
-        return jsonify({"status": "success", "results": results})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-@app.route('/mp3down/download', methods=['GET'])
-def music_download():
-    target_url = request.args.get('url')
-    raw_title = request.args.get('title', 'Unknown Title')
-    raw_artist = request.args.get('artist', 'Unknown Artist')
-    
-    if not target_url:
-        return jsonify({"error": "Parameter 'url' required"}), 400
-
-    try:
-        session = requests.Session()
-        
-        check_params = {'url': target_url}
-        session.get(
-            'https://spotdown.org/api/check-direct-download', 
-            params=check_params, 
-            headers=SPOTIFY_HEADERS
-        )
-
-        json_data = {'url': target_url}
-        req_file = session.post(
-            'https://spotdown.org/api/download', 
-            headers=SPOTIFY_HEADERS, 
-            json=json_data,
-            stream=True
-        )
-
-        clean_title = sanitize_filename(raw_title)
-        clean_artist = sanitize_filename(raw_artist)
-        filename = f"{clean_title} - {clean_artist}.mp3"
-
+        # Headers response ke user
         response_headers = {
-            'Content-Type': 'audio/mpeg',
-            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Type': content_type,
+            'Content-Disposition': f'attachment; filename="{final_filename}"',
+            'Cache-Control': 'no-cache'
         }
 
+        # Fungsi generator untuk streaming data (hemat RAM server)
         def generate():
-            for chunk in req_file.iter_content(chunk_size=4096):
+            for chunk in req.iter_content(chunk_size=4096):
                 if chunk:
                     yield chunk
 
@@ -205,6 +83,116 @@ def music_download():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+# --- TIKTOK ENDPOINTS ---
+@app.route('/ttdown/download', methods=['POST'])
+def tiktok_download():
+    try:
+        body = request.get_json(silent=True)
+        url = body.get('url') if body else request.args.get('url')
+
+        if not url:
+            return jsonify({"status": "error", "message": "URL required"}), 400
+            
+        data = {'query': url, 'language_id': '1'}
+        
+        session = requests.Session()
+        req = session.post('https://ttsave.app/download', headers=TIKTOK_HEADERS, json=data)
+        
+        if req.status_code != 200:
+            return jsonify({"status": "error", "message": "Gagal menghubungi provider"}), 400
+
+        soup = BeautifulSoup(req.text, 'html.parser')
+        result = {"platform": "tiktok", "type": "unknown", "video": None, "audio": None, "slides": [], "cover": None, "author": "MaropppUser"}
+
+        # Ambil Username (Opsional untuk nama file)
+        user_tag = soup.find('h2')
+        if user_tag: result['author'] = user_tag.text.strip()
+
+        video_links = []
+        for a in soup.find_all('a'):
+            href = a.get('href', '')
+            if 'video_mp4' in str(a) or ('nwm' in href and '.mp4' in href):
+                video_links.append(href)
+                result['type'] = "video"
+            elif '.mp3' in href:
+                result['audio'] = href
+            elif 'slide' in href or 'image' in href or '.jpg' in href:
+                if href not in result['slides']:
+                    result['slides'].append(href)
+                    result['type'] = "slide"
+        
+        if video_links: result['video'] = video_links[0]
+
+        return jsonify({"status": "success", "data": result})
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+# --- SPOTIFY ENDPOINTS ---
+@app.route('/mp3down/search', methods=['GET'])
+def music_search():
+    query = request.args.get('q')
+    if not query: return jsonify({"error": "Query required"}), 400
+
+    try:
+        session = requests.Session()
+        resp = session.get('https://spotdown.org/api/song-details', params={'url': query}, headers=SPOTIFY_HEADERS)
+        data = resp.json()
+        
+        if 'songs' not in data or not data['songs']:
+            return jsonify({"message": "Not found", "data": []}), 404
+
+        results = []
+        base_url = request.host_url.rstrip('/')
+
+        for item in data['songs']:
+            # Kita tidak membuat link download di sini, tapi di frontend
+            # Kita kirim raw_url ke frontend, frontend yang request ke /stream_content
+            
+            # Khusus Spotdown, kita butuh step tambahan untuk dapat direct link
+            # Jadi kita arahkan ke endpoint internal khusus prepare
+            results.append({
+                "title": item.get('title'),
+                "artist": item.get('artist'),
+                "duration": item.get('duration'),
+                "thumbnail": item.get('thumbnail'),
+                "original_url": item.get('url') # Link spotify asli
+            })
+
+        return jsonify({"status": "success", "results": results})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/mp3down/get_link', methods=['POST'])
+def music_get_direct_link():
+    # Helper untuk mendapatkan direct link audio dari spotdown sebelum di stream
+    body = request.get_json()
+    url = body.get('url')
+    
+    try:
+        session = requests.Session()
+        session.get('https://spotdown.org/api/check-direct-download', params={'url': url}, headers=SPOTIFY_HEADERS)
+        req_file = session.post('https://spotdown.org/api/download', headers=SPOTIFY_HEADERS, json={'url': url}, stream=True)
+        
+        # Spotdown kadang mereturn JSON error, kadang stream langsung
+        # Karena kita mau stream via /stream_content, kita butuh URL finalnya.
+        # Sayangnya spotdown post-request langsung return file blob.
+        # Jadi untuk spotify, kita pakai metode pass-through stream langsung di sini.
+        
+        def generate():
+            for chunk in req_file.iter_content(chunk_size=4096):
+                if chunk: yield chunk
+
+        filename = f"Music_{int(time.time())}.mp3"
+        return Response(stream_with_context(generate()), headers={
+            'Content-Type': 'audio/mpeg',
+            'Content-Disposition': f'attachment; filename="{filename}"'
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == '__main__':
-    # Menjalankan di port 5000
     app.run(debug=True, port=5000)
